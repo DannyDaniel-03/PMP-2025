@@ -17,9 +17,14 @@ scores = 40 + 5 * hours + rng.normal(0, 3, size=hours.size)
 
 # New inputs to forecast
 new_hours = np.array([2.0, 6.0, 10.0])
+supports_mutable_data = hasattr(pm, "MutableData")
 
 with pm.Model() as model:
-    x = pm.MutableData("hours", hours)
+    # pm.MutableData was introduced in newer PyMC releases; fall back to pm.Data
+    if supports_mutable_data:
+        x = pm.MutableData("hours", hours)
+    else:
+        x = pm.Data("hours", hours)
 
     alpha = pm.Normal("alpha", mu=50, sigma=20)
     beta = pm.Normal("beta", mu=0, sigma=10)
@@ -36,11 +41,21 @@ with pm.Model() as model:
     print(coef_hdi)
 
     # Predict on new inputs
-    pm.set_data({"hours": new_hours})
-    ppc = pm.sample_posterior_predictive(idata, var_names=["score"], random_seed=1)
+    if supports_mutable_data:
+        pm.set_data({"hours": new_hours})
+        ppc = pm.sample_posterior_predictive(idata, var_names=["score"], random_seed=1)
+        pred_samples = np.asarray(ppc.posterior_predictive["score"])
+    else:
+        posterior = idata.posterior
+        rng_pred = np.random.default_rng(1)
+        alpha_s = posterior["alpha"].values[..., None]
+        beta_s = posterior["beta"].values[..., None]
+        sigma_s = posterior["sigma"].values[..., None]
+        mu_new = alpha_s + beta_s * new_hours.reshape(1, 1, -1)
+        pred_samples = rng_pred.normal(mu_new, sigma_s)
 
 # 90% predictive intervals for each forecasted score
-pred_int = np.percentile(ppc.posterior_predictive["score"], [5, 95], axis=(0, 1))
+pred_int = np.percentile(pred_samples, [5, 95], axis=(0, 1))
 print("\nPredictive intervals (5th, 95th) for new_hours:")
 for h, lo, hi in zip(new_hours, pred_int[0], pred_int[1]):
     print(f"hours={h:>4.1f} -> score ~ {lo:5.2f} to {hi:5.2f}")
